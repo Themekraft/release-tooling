@@ -1,0 +1,71 @@
+# Reusable CI for ThemeKraft plugins: PHP syntax on the oldest and newest
+# supported PHP, and WordPress Plugin Check on the built zip.
+name: ci
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        required: true
+        type: string
+      php-versions:
+        description: JSON list of PHP versions for the syntax check.
+        required: false
+        type: string
+        default: '["7.4", "8.4"]'
+      plugin-check:
+        description: Run WordPress Plugin Check (wp.org products).
+        required: false
+        type: boolean
+        default: true
+      tooling-ref:
+        required: false
+        type: string
+        default: main
+    secrets:
+      CHECKOUT_TOKEN:
+        required: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - name: php -l
+        run: |
+          find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -not -path './.tk/*' -print0 \
+            | xargs -0 -n1 -P4 php -l -d display_errors=1 > /dev/null
+
+  plugin-check:
+    if: inputs.plugin-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: Themekraft/release-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .release-tooling
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer:v2
+      - name: Build
+        run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . build
+      - uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: build/${{ inputs.slug }}

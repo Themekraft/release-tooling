@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Build the release zip of a plugin or theme from a git checkout.
+#
+#   build-zip SLUG [SOURCE_DIR] [OUT_DIR]
+#
+# - Copies SOURCE_DIR (default: .) into OUT_DIR/SLUG, skipping everything listed
+#   in SOURCE_DIR/.distignore (rsync exclude syntax, one pattern per line).
+#   VCS metadata, CI config and the old tk_script files are always skipped.
+# - Runs `composer install --no-dev` in the copy when composer.json exists, so a
+#   committed vendor/ is synced to composer.lock and dev packages are removed.
+# - Writes OUT_DIR/SLUG.zip with SLUG/ as its root directory, which is what
+#   Freemius and WordPress expect.
+#
+# The source tree is never modified.
+set -euo pipefail
+
+slug=${1:?usage: build-zip SLUG [SOURCE_DIR] [OUT_DIR]}
+src=$(cd "${2:-.}" && pwd)
+out=$(mkdir -p "${3:-build}" && cd "${3:-build}" && pwd)
+dest="$out/$slug"
+
+rm -rf "$dest" "$out/$slug.zip"
+mkdir -p "$dest"
+
+excludes=(
+  --exclude=.git --exclude=.github --exclude=.gitmodules --exclude=.gitignore
+  --exclude=.distignore --exclude=.editorconfig --exclude=.DS_Store
+  --exclude=.wordpress-org --exclude=node_modules --exclude=/build
+  --exclude=/.tk --exclude=/tk.sh --exclude=/RoboFile.php --exclude=/.semver
+)
+if [[ -f "$src/.distignore" ]]; then
+  excludes+=(--exclude-from="$src/.distignore")
+fi
+
+rsync -a "${excludes[@]}" "$src/" "$dest/"
+
+if [[ -f "$dest/composer.json" ]]; then
+  composer install --no-dev --no-interaction --no-progress --optimize-autoloader \
+    --working-dir="$dest"
+fi
+
+# Nested VCS metadata from submodules or vendored packages.
+find "$dest" \( -name .git -o -name .github -o -name .gitmodules -o -name .DS_Store \) -prune -exec rm -rf {} +
+
+(cd "$out" && zip -qr "$slug.zip" "$slug")
+echo "$out/$slug.zip"

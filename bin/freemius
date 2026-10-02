@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Minimal Freemius developer API client for ThemeKraft releases.
+
+Credentials come from the environment:
+  FS_DEV_ID       developer ID (342)
+  FS_PUBLIC_KEY   developer public key (pk_...)
+  FS_SECRET_KEY   developer secret key (sk_...)
+
+Commands:
+  tags      PRODUCT_ID [--count N]
+  deploy    PRODUCT_ID ZIP --version V [--mode pending|beta|released]
+  set-mode  PRODUCT_ID --version V --mode pending|beta|released
+  download  PRODUCT_ID --version V --out FILE [--premium]
+"""
+
+import argparse
+import base64
+import email.utils
+import hashlib
+import hmac
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+API = "https://api.freemius.com"
+MODES = ("pending", "beta", "released")
+
+
+class FreemiusError(Exception):
+    pass
+
+
+def _env(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise FreemiusError(f"{name} is not set")
+    return value
+
+
+def _sign(method, path, content_type="", content_md5=""):
+    dev_id, pk, sk = _env("FS_DEV_ID"), _env("FS_PUBLIC_KEY"), _env("FS_SECRET_KEY")
+    date = email.utils.formatdate(usegmt=False).replace("-0000", "+0000")
+    string_to_sign = "\n".join([method, content_md5, content_type, date, path])
+    digest = hmac.new(sk.encode(), string_to_sign.encode(), hashlib.sha256).hexdigest()
+    signature = base64.urlsafe_b64encode(digest.encode()).decode().rstrip("=")
+    return {"Date": date, "Authorization": f"FS {dev_id}:{pk}:{signature}"}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def request(method, path, query="", body=None, content_type="", retries=3):
+    """Signed request against /v1/developers/{id}{path}. Returns parsed JSON or raw bytes."""
+    full_path = f"/v1/developers/{_env('FS_DEV_ID')}{path}"
+    content_md5 = ""
+    if body is not None and content_type == "application/json":
+        content_md5 = hashlib.md5(body).hexdigest()
+    headers = _sign(method, full_path, content_type, content_md5)
+    if content_type:
+        headers["Content-Type"] = content_type
+    if content_md5:
+        headers["Content-MD5"] = content_md5
+    url = API + full_path + (f"?{query}" if query else "")
+
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
+        try:
+            with urllib.request.build_opener(_NoRedirect).open(req, timeout=300) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as err:
+            if err.code in (301, 302, 303, 307):
+                # Deployment zips redirect to a signed S3 URL. Follow it WITHOUT the
+                # Authorization header, S3 rejects requests that carry two auth schemes.
+                with urllib.request.urlopen(err.headers["Location"], timeout=300) as resp:
+                    return resp.read()
+            detail = err.read().decode(errors="replace")[:500]
+            if err.code >= 500 and attempt < retries:
+                time.sleep(5 * attempt)
+                continue
+            raise FreemiusError(f"{method} {full_path} -> HTTP {err.code}: {detail}") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+            if attempt < retries:
+                time.sleep(5 * attempt)
+                continue
+            raise FreemiusError(f"{method} {full_path} failed: {err}") from None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return raw
+    raise FreemiusError("unreachable")
+
+
+def list_tags(product_id, count=50):
+    data = request("GET", f"/plugins/{product_id}/tags.json",
+                   f"count={count}&fields=id,version,release_mode,sdk_version,created")
+    return data.get("tags", [])
+
+
+def find_tag(product_id, version):
+    for tag in list_tags(product_id, 100):
+        if tag["version"] == version:
+            return tag
+    return None
+
+
+def set_mode(product_id, tag_id, mode):
+    if mode not in MODES:
+        raise FreemiusError(f"invalid mode {mode!r}, expected one of {MODES}")
+    body = json.dumps({"release_mode": mode}).encode()
+    return request("PUT", f"/plugins/{product_id}/tags/{tag_id}.json",
+                   body=body, content_type="application/json")
+
+
+def upload(product_id, zip_path):
+    boundary = "----" + uuid.uuid4().hex
+    with open(zip_path, "rb") as fh:
+        payload = fh.read()
+    name = os.path.basename(zip_path)
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'
+        "Content-Type: application/zip\r\n\r\n"
+    ).encode() + payload + f"\r\n--{boundary}--\r\n".encode()
+    return request("POST", f"/plugins/{product_id}/tags.json", body=body,
+                   content_type=f"multipart/form-data; boundary={boundary}")
+
+
+def cmd_tags(args):
+    for tag in list_tags(args.product, args.count):
+        print("\t".join(str(tag.get(k) or "-") for k in
+                        ("id", "version", "release_mode", "sdk_version", "created")))
+
+
+def cmd_deploy(args):
+    existing = find_tag(args.product, args.version)
+    if existing:
+        print(f"version {args.version} already deployed as tag {existing['id']}, not uploading again")
+        tag = existing
+    else:
+        tag = upload(args.product, args.zip)
+        if not isinstance(tag, dict) or "id" not in tag:
+            raise FreemiusError(f"unexpected upload response: {tag!r}"[:500])
+        if tag.get("version") != args.version:
+            raise FreemiusError(
+                f"Freemius parsed version {tag.get('version')!r} from the zip, expected {args.version!r}. "
+                "Check the Version header of the main plugin file.")
+        print(f"uploaded {args.zip} as tag {tag['id']}")
+    if tag.get("release_mode") != args.mode:
+        set_mode(args.product, tag["id"], args.mode)
+        print(f"tag {tag['id']} release_mode -> {args.mode}")
+    print(f"tag_id={tag['id']}")
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a") as fh:
+            fh.write(f"tag_id={tag['id']}\n")
+
+
+def cmd_set_mode(args):
+    tag = find_tag(args.product, args.version)
+    if not tag:
+        raise FreemiusError(f"version {args.version} not found for product {args.product}")
+    set_mode(args.product, tag["id"], args.mode)
+    print(f"tag {tag['id']} ({args.version}) release_mode -> {args.mode}")
+
+
+def cmd_download(args):
+    tag = find_tag(args.product, args.version)
+    if not tag:
+        raise FreemiusError(f"version {args.version} not found for product {args.product}")
+    data = request("GET", f"/plugins/{args.product}/tags/{tag['id']}.zip",
+                   f"is_premium={'true' if args.premium else 'false'}")
+    if not isinstance(data, bytes) or not data.startswith(b"PK"):
+        raise FreemiusError("download did not return a zip (premium-only product with no free build?)")
+    with open(args.out, "wb") as fh:
+        fh.write(data)
+    print(f"wrote {args.out} ({len(data)} bytes)")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="freemius", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("tags")
+    p.add_argument("product")
+    p.add_argument("--count", type=int, default=10)
+    p.set_defaults(func=cmd_tags)
+
+    p = sub.add_parser("deploy")
+    p.add_argument("product")
+    p.add_argument("zip")
+    p.add_argument("--version", required=True)
+    p.add_argument("--mode", choices=MODES, default="pending")
+    p.set_defaults(func=cmd_deploy)
+
+    p = sub.add_parser("set-mode")
+    p.add_argument("product")
+    p.add_argument("--version", required=True)
+    p.add_argument("--mode", choices=MODES, required=True)
+    p.set_defaults(func=cmd_set_mode)
+
+    p = sub.add_parser("download")
+    p.add_argument("product")
+    p.add_argument("--version", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--premium", action="store_true")
+    p.set_defaults(func=cmd_download)
+
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except FreemiusError as err:
+        print(f"error: {err}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

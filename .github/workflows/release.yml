@@ -1,0 +1,226 @@
+# Reusable release workflow for ThemeKraft plugins and themes.
+#
+# Called from a product repo on tag push. The tag is the version:
+#   x.y.z-beta.N  -> Freemius only, release_mode=beta, GitHub prerelease
+#   x.y.z         -> Freemius released, then (if wporg: true) the free build
+#                    Freemius generates is committed to wordpress.org SVN
+#
+# The wp.org build is ALWAYS the free zip downloaded back from Freemius, never
+# the repo contents, because Freemius strips the premium-only code.
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: Install slug (plugin folder name, wp.org slug). Not the repo name.
+        required: true
+        type: string
+      freemius-id:
+        description: Freemius product ID.
+        required: true
+        type: string
+      main-file:
+        description: File that carries the Version header (plugin main file or style.css).
+        required: true
+        type: string
+      wporg:
+        description: Publish the free build to wordpress.org on stable releases.
+        required: false
+        type: boolean
+        default: false
+      php-version:
+        required: false
+        type: string
+        default: "8.2"
+      tooling-ref:
+        description: Ref of Themekraft/release-tooling to use for the scripts.
+        required: false
+        type: string
+        default: main
+    secrets:
+      FS_DEV_ID:
+        required: true
+      FS_PUBLIC_KEY:
+        required: true
+      FS_SECRET_KEY:
+        required: true
+      SVN_USERNAME:
+        required: false
+      SVN_PASSWORD:
+        required: false
+      CHECKOUT_TOKEN:
+        description: Token that can read private submodules (e.g. pricing-page). Optional.
+        required: false
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Themekraft/release-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .release-tooling
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+)?$ ]]; then
+            echo "::error::Tag '$version' is not a release version (x.y.z or x.y.z-beta.N)"
+            exit 1
+          fi
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Check version headers match the tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          MAIN_FILE: ${{ inputs.main-file }}
+        run: |
+          header=$(grep -m1 -E '^[[:space:]]*\*?[[:space:]]*Version:' "$MAIN_FILE" | sed -E 's/.*Version:[[:space:]]*//' | tr -d '\r[:space:]')
+          if [[ "$header" != "$VERSION" ]]; then
+            echo "::error file=$MAIN_FILE::Version header is '$header' but the tag is '$VERSION'"
+            exit 1
+          fi
+          if [[ -f readme.txt && "$PRERELEASE" == false ]]; then
+            stable=$(grep -m1 -i '^Stable tag:' readme.txt | sed -E 's/^Stable tag:[[:space:]]*//I' | tr -d '\r[:space:]')
+            if [[ "$stable" != "$VERSION" ]]; then
+              echo "::error file=readme.txt::Stable tag is '$stable' but the tag is '$VERSION'"
+              exit 1
+            fi
+          fi
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+
+      - name: Build zip
+        run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.slug }}-${{ steps.version.outputs.version }}
+          path: build/${{ inputs.slug }}.zip
+          if-no-files-found: error
+          # The zip contains the premium code; keep it only as long as the jobs need it.
+          retention-days: 3
+
+  freemius:
+    needs: build
+    runs-on: ubuntu-latest
+    # Stable releases wait for approval in the "production" environment when the
+    # product repo configures required reviewers for it.
+    environment: ${{ needs.build.outputs.prerelease == 'true' && 'beta' || 'production' }}
+    outputs:
+      tag-id: ${{ steps.deploy.outputs.tag_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Themekraft/release-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .release-tooling
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.slug }}-${{ needs.build.outputs.version }}
+          path: build
+
+      - name: Deploy to Freemius
+        id: deploy
+        env:
+          FS_DEV_ID: ${{ secrets.FS_DEV_ID }}
+          FS_PUBLIC_KEY: ${{ secrets.FS_PUBLIC_KEY }}
+          FS_SECRET_KEY: ${{ secrets.FS_SECRET_KEY }}
+        run: |
+          mode=released
+          [[ "${{ needs.build.outputs.prerelease }}" == true ]] && mode=beta
+          .release-tooling/bin/freemius deploy "${{ inputs.freemius-id }}" "build/${{ inputs.slug }}.zip" \
+            --version "${{ needs.build.outputs.version }}" --mode "$mode"
+
+  wporg:
+    needs: [build, freemius]
+    if: inputs.wporg && needs.build.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Themekraft/release-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .release-tooling
+
+      - name: Download the free build from Freemius
+        env:
+          FS_DEV_ID: ${{ secrets.FS_DEV_ID }}
+          FS_PUBLIC_KEY: ${{ secrets.FS_PUBLIC_KEY }}
+          FS_SECRET_KEY: ${{ secrets.FS_SECRET_KEY }}
+        run: |
+          .release-tooling/bin/freemius download "${{ inputs.freemius-id }}" \
+            --version "${{ needs.build.outputs.version }}" --out free.zip
+          mkdir -p free && unzip -q free.zip -d free
+          test -f "free/${{ inputs.slug }}/readme.txt" || { echo "::error::free build has no ${{ inputs.slug }}/readme.txt"; exit 1; }
+
+      - name: Commit to wordpress.org SVN
+        uses: 10up/action-wordpress-plugin-deploy@stable
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: ${{ inputs.slug }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_DIR: free/${{ inputs.slug }}
+
+  github-release:
+    needs: [build, freemius]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Themekraft/release-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .release-tooling
+
+      - name: Changelog from Conventional Commits
+        id: changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: .release-tooling/cliff.toml
+          args: ${{ needs.build.outputs.prerelease == 'true' && '--unreleased' || '--latest' }} --strip header
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          flags=()
+          [[ "${{ needs.build.outputs.prerelease }}" == true ]] && flags+=(--prerelease)
+          # No zip attached on purpose: it contains the premium code and the repos are public.
+          gh release create "$VERSION" \
+            --title "$VERSION" --notes-file CHANGELOG.md --verify-tag "${flags[@]}"
