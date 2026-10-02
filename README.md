@@ -40,8 +40,9 @@ Organization secrets in Themekraft, available to public repos: `FS_DEV_ID`, `FS_
 
 ```
 export FS_DEV_ID=342
-export FS_PUBLIC_KEY=$(op read "op://Jaime/Freemius Developer API Key/username" --account my.1password.com)
-export FS_SECRET_KEY=$(op read "op://Jaime/Freemius Developer API Key/credential" --account my.1password.com)
+# op-sa = 1Password CLI as the service account for the Jaime vault (no approval prompt)
+export FS_PUBLIC_KEY=$(op-sa read "op://Jaime/Freemius Developer API Key/username")
+export FS_SECRET_KEY=$(op-sa read "op://Jaime/Freemius Developer API Key/credential")
 bin/freemius tags 426
 bin/freemius download 426 --version 2.2.14 --out free.zip
 ```
