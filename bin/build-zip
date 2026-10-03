@@ -3,11 +3,16 @@
 #
 #   build-zip SLUG [SOURCE_DIR] [OUT_DIR]
 #
+# OUT_DIR defaults to .release-build, so a plugin's own build/ directory (for
+# example @wordpress/scripts output) is shipped like any other file.
+#
 # - Copies SOURCE_DIR (default: .) into OUT_DIR/SLUG, skipping everything listed
 #   in SOURCE_DIR/.distignore (rsync exclude syntax, one pattern per line).
 #   VCS metadata, CI config and the old tk_script files are always skipped.
-# - Runs `composer install --no-dev` in the copy when composer.json exists, so a
-#   committed vendor/ is synced to composer.lock and dev packages are removed.
+# - Runs `composer install --no-dev` in the copy when the source has a
+#   composer.json, so a committed vendor/ is synced to composer.lock and dev
+#   packages are removed. If .distignore excludes composer.json/composer.lock,
+#   they are used for the install and removed again afterwards.
 # - Writes OUT_DIR/SLUG.zip with SLUG/ as its root directory, which is what
 #   Freemius and WordPress expect.
 #
@@ -16,7 +21,7 @@ set -euo pipefail
 
 slug=${1:?usage: build-zip SLUG [SOURCE_DIR] [OUT_DIR]}
 src=$(cd "${2:-.}" && pwd)
-out=$(mkdir -p "${3:-build}" && cd "${3:-build}" && pwd)
+out=$(mkdir -p "${3:-.release-build}" && cd "${3:-.release-build}" && pwd)
 dest="$out/$slug"
 
 rm -rf "$dest" "$out/$slug.zip"
@@ -25,19 +30,31 @@ mkdir -p "$dest"
 excludes=(
   --exclude=.git --exclude=.github --exclude=.gitmodules --exclude=.gitignore
   --exclude=.distignore --exclude=.editorconfig --exclude=.DS_Store
-  --exclude=.wordpress-org --exclude=node_modules --exclude=/build
+  --exclude=.wordpress-org --exclude=node_modules --exclude=/.release-build
   --exclude=/.tk --exclude=/tk.sh --exclude=/RoboFile.php --exclude=/.semver
   --exclude=/.release-tooling
 )
+# Never copy the output directory into itself when it lives inside the source.
+case "$out/" in
+  "$src"/*) excludes+=(--exclude="/${out#"$src"/}") ;;
+esac
 if [[ -f "$src/.distignore" ]]; then
   excludes+=(--exclude-from="$src/.distignore")
 fi
 
 rsync -a "${excludes[@]}" "$src/" "$dest/"
 
-if [[ -f "$dest/composer.json" ]]; then
+if [[ -f "$src/composer.json" ]]; then
+  added=()
+  for f in composer.json composer.lock; do
+    if [[ -f "$src/$f" && ! -e "$dest/$f" ]]; then
+      cp "$src/$f" "$dest/$f"
+      added+=("$dest/$f")
+    fi
+  done
   composer install --no-dev --no-interaction --no-progress --optimize-autoloader \
     --working-dir="$dest"
+  rm -f "${added[@]}"
 fi
 
 # Nested VCS metadata from submodules or vendored packages.

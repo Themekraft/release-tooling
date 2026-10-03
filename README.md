@@ -13,7 +13,7 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 
 - `.github/workflows/release.yml`: reusable release workflow (`workflow_call`).
 - `.github/workflows/ci.yml`: reusable CI: `php -l` on the oldest and newest PHP, and WordPress Plugin Check on the built zip.
-- `bin/build-zip`: builds `SLUG.zip` with `SLUG/` as root from a checkout. Honors `.distignore`, runs `composer install --no-dev` in the copy, never touches the source tree. Does not minify or rewrite code.
+- `bin/build-zip`: builds `SLUG.zip` with `SLUG/` as root from a checkout, in `.release-build/` by default (so a plugin's own `build/` ships). Honors `.distignore`, runs `composer install --no-dev` in the copy (even when `.distignore` keeps `composer.json` out of the zip), never touches the source tree. Does not minify or rewrite code.
 - `bin/freemius`: small client for the Freemius developer API (`tags`, `deploy`, `set-mode`, `download`). Python 3 standard library only.
 - `bin/gh-pc-results`: pulls the Plugin Check findings of a product's latest CI run into a JSON file (`gh-pc-results Themekraft/wc4bp ci/release-pipeline pc.json`).
 - `bin/pcp-autofix`: applies the Plugin Check fixes that cannot change behavior, from that JSON, run in the product root: ABSPATH guards, `translators:` comments (named after the sprintf arguments, inner comments moved in front of the call) and the WordPress/PHP/Tested-up-to headers. It lists every other error as manual. Review the diff, especially any translator comment that says "value".
@@ -26,7 +26,8 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 2. Copy `templates/.distignore` and adjust it to the product.
 3. Remove the `.tk` submodule, `tk.sh`, `RoboFile.php` and `.semver`.
 4. Open the PR, then run `gh-pc-results` and `pcp-autofix` on the CI findings. tk_script injected ABSPATH guards at build time, so the first run of a migrated product always reports them.
-5. If errors that need real code changes remain (escaping, SQL, HTTP API, settings sanitizers), set `plugin-check-blocking: false` in the product's `ci.yml` and track them in Jira; remove the flag once they are fixed.
+5. If the plugin compiles assets (for example `@wordpress/scripts` into `build/`), set `build-command` in both `release.yml` and `ci.yml` (`pnpm install --frozen-lockfile && pnpm run build`) and declare pnpm in `package.json` (`"packageManager": "pnpm@x.y.z"`); Node and pnpm are only installed when `build-command` is set. Add `.release-build/` to the product's `.gitignore`.
+6. If errors that need real code changes remain (escaping, SQL, HTTP API, settings sanitizers), set `plugin-check-blocking: false` in the product's `ci.yml` and track them in Jira; remove the flag once they are fixed.
 
 ## Releasing
 

@@ -33,6 +33,15 @@ on:
         required: false
         type: string
         default: "8.2"
+      build-command:
+        description: Command that builds the plugin's assets before packaging (for example "pnpm install --frozen-lockfile && pnpm run build"). Node and pnpm are installed only when it is set.
+        required: false
+        type: string
+        default: ""
+      node-version:
+        required: false
+        type: string
+        default: "22"
       tooling-ref:
         description: Ref of Themekraft/release-tooling to use for the scripts.
         required: false
@@ -114,13 +123,24 @@ jobs:
           php-version: ${{ inputs.php-version }}
           tools: composer:v2
 
+      - uses: pnpm/action-setup@v6
+        # pnpm version comes from the product's package.json "packageManager" field.
+        if: inputs.build-command != ''
+      - uses: actions/setup-node@v7
+        if: inputs.build-command != ''
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Build assets
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+
       - name: Build zip
-        run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . build
+        run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . .release-build
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.slug }}-${{ steps.version.outputs.version }}
-          path: build/${{ inputs.slug }}.zip
+          path: .release-build/${{ inputs.slug }}.zip
           if-no-files-found: error
           # The zip contains the premium code; keep it only as long as the jobs need it.
           retention-days: 3

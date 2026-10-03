@@ -23,6 +23,15 @@ on:
         required: false
         type: boolean
         default: true
+      build-command:
+        description: Command that builds the plugin's assets before packaging (for example "pnpm install --frozen-lockfile && pnpm run build"). Node and pnpm are installed only when it is set.
+        required: false
+        type: string
+        default: ""
+      node-version:
+        required: false
+        type: string
+        default: "22"
       tooling-ref:
         required: false
         type: string
@@ -69,8 +78,18 @@ jobs:
         with:
           php-version: "8.2"
           tools: composer:v2
+      - uses: pnpm/action-setup@v6
+        # pnpm version comes from the product's package.json "packageManager" field.
+        if: inputs.build-command != ''
+      - uses: actions/setup-node@v7
+        if: inputs.build-command != ''
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Build assets
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
       - name: Build
-        run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . build
+        run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . .release-build
       - name: Plugin Check
         id: plugin-check
         uses: wordpress/plugin-check-action@v1
@@ -78,7 +97,7 @@ jobs:
         # A continue-on-error expression on this composite action did not apply reliably.
         continue-on-error: true
         with:
-          build-dir: build/${{ inputs.slug }}
+          build-dir: .release-build/${{ inputs.slug }}
           # The action comments a "Failed" summary on the PR when it has a token. Only
           # let it do that where errors block; elsewhere the green CI would contradict it.
           repo-token: ${{ inputs.plugin-check-blocking && github.token || '' }}
