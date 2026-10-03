@@ -71,9 +71,21 @@ jobs:
           tools: composer:v2
       - name: Build
         run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . build
-      - name: Debug blocking flag
-        run: echo "input=[${{ inputs.plugin-check-blocking }}] not=[${{ !inputs.plugin-check-blocking }}] eqfalse=[${{ inputs.plugin-check-blocking == false }}]"
-      - uses: wordpress/plugin-check-action@v1
-        continue-on-error: ${{ !inputs.plugin-check-blocking }}
+      - name: Plugin Check
+        id: plugin-check
+        uses: wordpress/plugin-check-action@v1
+        # Always continue: the next step decides whether errors fail the job.
+        # A continue-on-error expression on this composite action did not apply reliably.
+        continue-on-error: true
         with:
           build-dir: build/${{ inputs.slug }}
+      - name: Fail on Plugin Check errors
+        if: steps.plugin-check.outcome == 'failure'
+        env:
+          BLOCKING: ${{ inputs.plugin-check-blocking }}
+        run: |
+          if [[ "$BLOCKING" == "true" ]]; then
+            echo "::error::Plugin Check reported errors (see the annotations above)."
+            exit 1
+          fi
+          echo "::warning::Plugin Check reported errors; not blocking for this repository (plugin-check-blocking: false)."
