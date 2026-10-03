@@ -15,6 +15,8 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 - `.github/workflows/ci.yml`: reusable CI: `php -l` on the oldest and newest PHP, and WordPress Plugin Check on the built zip.
 - `bin/build-zip`: builds `SLUG.zip` with `SLUG/` as root from a checkout. Honors `.distignore`, runs `composer install --no-dev` in the copy, never touches the source tree. Does not minify or rewrite code.
 - `bin/freemius`: small client for the Freemius developer API (`tags`, `deploy`, `set-mode`, `download`). Python 3 standard library only.
+- `bin/gh-pc-results`: pulls the Plugin Check findings of a product's latest CI run into a JSON file (`gh-pc-results Themekraft/wc4bp ci/release-pipeline pc.json`).
+- `bin/pcp-autofix`: applies the Plugin Check fixes that cannot change behavior, from that JSON, run in the product root: ABSPATH guards, `translators:` comments (named after the sprintf arguments, inner comments moved in front of the call) and the WordPress/PHP/Tested-up-to headers. It lists every other error as manual. Review the diff, especially any translator comment that says "value".
 - `cliff.toml`: git-cliff config for the release notes.
 - `templates/`: `release.yml`, `ci.yml` and `.distignore` to copy into a product repo.
 
@@ -23,6 +25,8 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 1. Copy `templates/release.yml` and `templates/ci.yml` to the product's `.github/workflows/`, and set `slug` (install slug, which is not always the repo name), `freemius-id` and `main-file`. Set `wporg: false` for products that are not on wordpress.org.
 2. Copy `templates/.distignore` and adjust it to the product.
 3. Remove the `.tk` submodule, `tk.sh`, `RoboFile.php` and `.semver`.
+4. Open the PR, then run `gh-pc-results` and `pcp-autofix` on the CI findings. tk_script injected ABSPATH guards at build time, so the first run of a migrated product always reports them.
+5. If errors that need real code changes remain (escaping, SQL, HTTP API, settings sanitizers), set `plugin-check-blocking: false` in the product's `ci.yml` and track them in Jira; remove the flag once they are fixed.
 
 ## Releasing
 

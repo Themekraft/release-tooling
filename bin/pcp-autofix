@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Apply the mechanical Plugin Check fixes to a plugin checkout.
+
+    pcp-autofix RESULTS.json [--requires-wp 5.9] [--requires-php 7.4] [--tested 7.1]
+
+RESULTS.json is the list of Plugin Check findings, each with "file", "line",
+"code", "type" and "message" (the format `gh-pc-results` writes from a CI run).
+Run it from the plugin root. Only changes that cannot alter behavior are made:
+
+- missing_direct_file_access_protection: adds an ABSPATH guard right after the
+  opening <?php line (or after the namespace / strict_types declaration).
+- WordPress.WP.I18n.MissingTranslatorsComment: adds a /* translators: */
+  comment in front of the gettext call, naming each placeholder after the
+  matching sprintf()/printf() argument when there is one.
+- outdated_tested_upto_header / wp_function_not_compatible_with_requires_wp:
+  updates "Tested up to", "Requires at least" and "Requires PHP" in readme.txt
+  and adds "Requires at least" / "Requires PHP" to the plugin header if missing.
+
+Everything else is printed as "manual" so a person decides.
+"""
+
+import argparse
+import collections
+import json
+import re
+import sys
+
+GUARD = "if ( ! defined( 'ABSPATH' ) ) {\n\texit;\n}\n"
+GETTEXT = re.compile(
+    r"(?<![A-Za-z0-9_>:$])(esc_html__|esc_html_e|esc_attr__|esc_attr_e|esc_html_x|esc_attr_x|_nx_noop|_n_noop|_nx|_n|_x|_e|__)\s*\("
+)
+HANDLED = {
+    "missing_direct_file_access_protection",
+    "WordPress.WP.I18n.MissingTranslatorsComment",
+    "outdated_tested_upto_header",
+    "wp_function_not_compatible_with_requires_wp",
+}
+
+
+def add_guard(path):
+    s = open(path).read()
+    if re.search(r"defined\(\s*['\"]ABSPATH['\"]\s*\)", s):
+        return "has guard"
+    if not s.startswith("<?php"):
+        return "does not start with <?php"
+    m = re.search(r"^\s*namespace\s+[^;{]+;[^\n]*\n", s, re.M) or re.search(
+        r"^\s*declare\s*\(\s*strict_types[^;]*;[^\n]*\n", s, re.M
+    )
+    if m:
+        pos = m.end()
+    else:
+        pos = s.index("\n") + 1
+        if s[:pos].strip() != "<?php":
+            return "code on the <?php line"
+    open(path, "w").write(s[:pos] + "\n" + GUARD + s[pos:])
+    return None
+
+
+def split_args(s, start):
+    """Split call arguments starting right after '('. Returns (args, index after ')')."""
+    depth, args, cur, i, quote = 0, [], "", start, None
+    while i < len(s):
+        c = s[i]
+        if quote:
+            cur += c
+            if c == "\\" and i + 1 < len(s):
+                cur += s[i + 1]
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+            cur += c
+        elif c in "([{":
+            depth += 1
+            cur += c
+        elif c in ")]}":
+            if depth == 0:
+                args.append(cur.strip())
+                return args, i + 1
+            depth -= 1
+            cur += c
+        elif c == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+        else:
+            cur += c
+        i += 1
+    return args, i
+
+
+def add_translators_comments(path, lines, shifted):
+    s = open(path).read()
+    done, skipped = 0, []
+    for line in sorted(set(lines), reverse=True):
+        L = s.split("\n")
+        idx = line - 1 + shifted
+        pos = sum(len(x) + 1 for x in L[:idx])
+        m = GETTEXT.search(s, pos)
+        if not m or s.count("\n", pos, m.start()) > 3:
+            skipped.append(line)
+            continue
+        if "translators:" in s[max(0, m.start() - 160):m.start()].split(";")[-1]:
+            continue
+        # A comment placed inside the call (TGM Plugin Activation does this) is not
+        # accepted; move it in front of the call instead of adding a generic one.
+        inner = re.match(r"\s*(/\*\s*translators:.*?\*/)[ \t]*\n?", s[m.end():], re.S)
+        if inner:
+            s = s[:m.start()] + inner.group(1) + " " + s[m.start():m.end()] + s[m.end() + inner.end():]
+            done += 1
+            continue
+        args, end = split_args(s, m.end())
+        ph = re.findall(r"%(?:(\d+)\$)?[sdfu]", args[0] if args else "")
+        numbered = any(ph)
+        count = max(int(i) for i in ph if i) if numbered else len(ph)
+        names = []
+        if re.search(r"(s?printf|wp_sprintf)\s*\(\s*$", s[max(0, m.start() - 40):m.start()]):
+            am = re.match(r"\s*,", s[end:])
+            if am:
+                names = [re.sub(r"\s+", " ", a) for a in split_args(s, end + am.end())[0]]
+        parts = []
+        for k in range(max(count, 1)):
+            tag = f"%{k + 1}$s" if numbered or count > 1 else "%s"
+            desc = names[k] if k < len(names) else "value"
+            desc = re.sub(r"^(esc_\w+|absint|intval|number_format_i18n|wp_kses_post)\(\s*(.*?)\s*\)$", r"\2", desc)[:70]
+            parts.append(f"{tag}: {desc}")
+        comment = "/* translators: " + "; ".join(parts).replace("*/", "* /") + ". */ "
+        s = s[:m.start()] + comment + s[m.start():]
+        done += 1
+    open(path, "w").write(s)
+    return done, skipped
+
+
+def update_requirements(req_wp, req_php, tested):
+    s = open("readme.txt").read()
+    for key, value in (("Requires at least", req_wp), ("Tested up to", tested), ("Requires PHP", req_php)):
+        if re.search(rf"(?m)^{key}:", s):
+            s = re.sub(rf"(?m)^{key}: .*$", f"{key}: {value}", s, count=1)
+        else:
+            s = re.sub(r"(?m)^(Stable tag: .*)$", rf"{key}: {value}\n\1", s, count=1)
+    open("readme.txt", "w").write(s)
+    import glob
+
+    for php in glob.glob("*.php"):
+        p = open(php).read()
+        head = p.split("*/")[0]
+        if "Plugin Name:" not in head:
+            continue
+        if "Requires at least:" not in head:
+            p = re.sub(r"(?m)^(\s*\*\s*Version:.*\n)", rf"\1 * Requires at least: {req_wp}\n * Requires PHP: {req_php}\n", p, count=1)
+            open(php, "w").write(p)
+        return php
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("results")
+    ap.add_argument("--requires-wp", default="5.9")
+    ap.add_argument("--requires-php", default="7.4")
+    ap.add_argument("--tested", default="7.1")
+    a = ap.parse_args()
+    rows = json.load(open(a.results))
+
+    # Files the report says had no guard. Once a guard is in place (added now or by
+    # an earlier run), every reported line in them sits 4 lines lower.
+    needed = sorted({r["file"] for r in rows if r["code"] == "missing_direct_file_access_protection"})
+    added = 0
+    for f in needed:
+        why = add_guard(f)
+        if why and why != "has guard":
+            print(f"guard skipped: {f} ({why})")
+        elif not why:
+            added += 1
+    guarded = {f for f in needed if GUARD in open(f).read()}
+    print(f"ABSPATH guards added: {added}")
+
+    by_file = collections.defaultdict(list)
+    for r in rows:
+        if r["code"] == "WordPress.WP.I18n.MissingTranslatorsComment":
+            by_file[r["file"]].append(r["line"])
+    total = 0
+    for f, lines in by_file.items():
+        done, skipped = add_translators_comments(f, lines, 4 if f in guarded else 0)
+        total += done
+        for line in skipped:
+            print(f"translators comment skipped: {f}:{line} (gettext call not found)")
+    print(f"translators comments added: {total} (review any 'value' descriptions by hand)")
+
+    if any(r["code"] in ("outdated_tested_upto_header", "wp_function_not_compatible_with_requires_wp") for r in rows):
+        main_file = update_requirements(a.requires_wp, a.requires_php, a.tested)
+        print(f"requirements: WordPress {a.requires_wp}, PHP {a.requires_php}, tested {a.tested} (readme.txt, {main_file})")
+
+    manual = collections.Counter((r["type"], r["code"]) for r in rows if r["code"] not in HANDLED and r["type"] == "ERROR")
+    if manual:
+        print("manual errors left:")
+        for (t, code), n in manual.most_common():
+            print(f"  {n:4} {code}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

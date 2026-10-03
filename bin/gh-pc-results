@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Extract the Plugin Check findings from a CI run into a JSON file.
+#
+#   gh-pc-results OWNER/REPO REF OUT.json
+#
+# REF is a branch name or a commit SHA; the latest ci.yml run for it is used.
+# Each finding gets the "file" it belongs to, so the result can feed pcp-autofix.
+set -euo pipefail
+
+repo=${1:?usage: gh-pc-results OWNER/REPO REF OUT.json}
+ref=${2:?ref}
+out=${3:?out}
+
+if [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then
+  id=$(gh run list --repo "$repo" --commit "$ref" --workflow ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+else
+  id=$(gh run list --repo "$repo" --branch "$ref" --workflow ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+fi
+[[ -n "$id" ]] || { echo "no ci.yml run found for $repo $ref" >&2; exit 1; }
+
+gh run view "$id" --repo "$repo" --log | grep "plugin-check" | python3 -c '
+import json, re, sys
+rows, cur = [], None
+for line in sys.stdin:
+    m = re.search(r"Z FILE: (\S+)", line)
+    if m:
+        cur = m.group(1)
+    m = re.search(r"Z (\[\{.*\}\])\s*$", line)
+    if m:
+        for r in json.loads(m.group(1)):
+            r["file"] = cur
+            rows.append(r)
+json.dump(rows, open(sys.argv[1], "w"), indent=1)
+errors = sum(1 for r in rows if r["type"] == "ERROR")
+print(f"run {sys.argv[2]}: {errors} errors, {len(rows) - errors} warnings -> {sys.argv[1]}")
+' "$out" "$id"
