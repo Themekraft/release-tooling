@@ -23,6 +23,11 @@ on:
         required: false
         type: boolean
         default: true
+      plugin-check-exclude-checks:
+        description: Comma-separated Plugin Check checks to skip, for a product the CI environment cannot run them on (document the reason in the product's ci.yml).
+        required: false
+        type: string
+        default: ""
       build-command:
         description: Command that builds the plugin's assets before packaging (for example "pnpm install --frozen-lockfile && pnpm run build"). Node and pnpm are installed only when it is set.
         required: false
@@ -98,6 +103,7 @@ jobs:
         continue-on-error: true
         with:
           build-dir: .release-build/${{ inputs.slug }}
+          exclude-checks: ${{ inputs.plugin-check-exclude-checks }}
           # The action comments a "Failed" summary on the PR when it has a token. Only
           # let it do that where errors block; elsewhere the green CI would contradict it.
           repo-token: ${{ inputs.plugin-check-blocking && github.token || '' }}
