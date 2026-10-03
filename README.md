@@ -36,6 +36,8 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 
 If a later step fails (for example SVN), re-run the failed job: the Freemius deploy is idempotent and reuses an existing tag with the same version.
 
+Large plugins can hit `svn: E175012: Connection timed out` right after "Transmitting file data". The commit often landed anyway (BuddyForms 2.10.0 did): before re-running, check `https://plugins.svn.wordpress.org/SLUG/tags/VERSION/readme.txt` and `trunk/readme.txt`. SVN commits are atomic, so if the tag is there it is complete.
+
 ## Secrets
 
 Organization secrets in Themekraft, available to public repos: `FS_DEV_ID`, `FS_PUBLIC_KEY`, `FS_SECRET_KEY` (Freemius developer key), `SVN_USERNAME`, `SVN_PASSWORD` (wordpress.org). Private repos on the free GitHub plan cannot read organization secrets, so they need the same secrets at repo level. `CHECKOUT_TOKEN` is only needed while a submodule is private.
