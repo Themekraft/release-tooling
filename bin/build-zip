@@ -9,8 +9,8 @@
 # - Copies SOURCE_DIR (default: .) into OUT_DIR/SLUG, skipping everything listed
 #   in SOURCE_DIR/.distignore (rsync exclude syntax, one pattern per line).
 #   VCS metadata, CI config and the old tk_script files are always skipped.
-# - Runs `composer install --no-dev` in the copy when the source has a
-#   composer.json, so a committed vendor/ is synced to composer.lock and dev
+# - Runs `composer install --no-dev` in the copy when the source's composer.json
+#   requires packages, so a committed vendor/ is synced to composer.lock and dev
 #   packages are removed. If .distignore excludes composer.json/composer.lock,
 #   they are used for the install and removed again afterwards.
 # - Writes OUT_DIR/SLUG.zip with SLUG/ as its root directory, which is what
@@ -44,7 +44,18 @@ fi
 
 rsync -a "${excludes[@]}" "$src/" "$dest/"
 
-if [[ -f "$src/composer.json" ]]; then
+# Only packages count: a composer.json that requires nothing but php/ext-* (or
+# only has dev tooling) would just add an empty vendor/autoload.php.
+needs_composer() {
+  [[ -f "$src/composer.json" ]] || return 1
+  php -r '$j = json_decode( file_get_contents( $argv[1] ), true );
+    foreach ( array_keys( $j["require"] ?? array() ) as $p ) {
+      if ( "php" !== $p && 0 !== strpos( $p, "ext-" ) ) { exit( 0 ); }
+    }
+    exit( 1 );' "$src/composer.json"
+}
+
+if needs_composer; then
   added=()
   for f in composer.json composer.lock; do
     if [[ -f "$src/$f" && ! -e "$dest/$f" ]]; then
