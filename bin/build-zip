@@ -27,6 +27,7 @@ excludes=(
   --exclude=.distignore --exclude=.editorconfig --exclude=.DS_Store
   --exclude=.wordpress-org --exclude=node_modules --exclude=/build
   --exclude=/.tk --exclude=/tk.sh --exclude=/RoboFile.php --exclude=/.semver
+  --exclude=/.release-tooling
 )
 if [[ -f "$src/.distignore" ]]; then
   excludes+=(--exclude-from="$src/.distignore")
@@ -41,6 +42,13 @@ fi
 
 # Nested VCS metadata from submodules or vendored packages.
 find "$dest" \( -name .git -o -name .github -o -name .gitmodules -o -name .DS_Store \) -prune -exec rm -rf {} +
+
+# Guard: the workflows check this repository out as .release-tooling inside the
+# product checkout; it must never reach a customer (it did in the first releases).
+if [[ -e "$dest/.release-tooling" ]]; then
+  echo "build-zip: .release-tooling ended up in the build" >&2
+  exit 1
+fi
 
 (cd "$out" && zip -qr "$slug.zip" "$slug")
 echo "$out/$slug.zip"
