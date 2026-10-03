@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: true
+      plugin-check-blocking:
+        description: Fail the CI when Plugin Check reports errors. Set to false only while a product pays down a known backlog; the results are still reported.
+        required: false
+        type: boolean
+        default: true
       tooling-ref:
         required: false
         type: string
@@ -67,5 +72,6 @@ jobs:
       - name: Build
         run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . build
       - uses: wordpress/plugin-check-action@v1
+        continue-on-error: ${{ !inputs.plugin-check-blocking }}
         with:
           build-dir: build/${{ inputs.slug }}
