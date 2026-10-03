@@ -31,7 +31,7 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 
 ## Releasing
 
-1. On `develop`, bump the `Version:` header (and the version constant, if the product has one). For a stable release also set `Stable tag:` in `readme.txt` and add the changelog entry.
+1. On `develop`, bump the `Version:` header (and the version constant, if the product has one) and set `Stable tag:` in `readme.txt` to the same version, betas included: Plugin Check fails with `stable_tag_mismatch` otherwise (wp.org only reads `Stable tag` from the stable release, so a beta value in `develop` never reaches it). For a stable release also add the changelog entry.
 2. Merge `develop` into `main` through a PR, tag the release commit on `main` with the bare version (`2.3.0` or `2.3.0-beta.1`) and push the tag.
 3. Stable releases wait in the `production` environment if it has required reviewers.
 
