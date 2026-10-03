@@ -27,7 +27,7 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 ## Releasing
 
 1. On `develop`, bump the `Version:` header (and the version constant, if the product has one). For a stable release also set `Stable tag:` in `readme.txt` and add the changelog entry.
-2. Merge to `master`, tag the release commit with the bare version (`2.3.0` or `2.3.0-beta.1`) and push the tag.
+2. Merge `develop` into `main` through a PR, tag the release commit on `main` with the bare version (`2.3.0` or `2.3.0-beta.1`) and push the tag.
 3. Stable releases wait in the `production` environment if it has required reviewers.
 
 If a later step fails (for example SVN), re-run the failed job: the Freemius deploy is idempotent and reuses an existing tag with the same version.
