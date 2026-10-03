@@ -39,7 +39,7 @@ jobs:
       matrix:
         php: ${{ fromJSON(inputs.php-versions) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
@@ -56,11 +56,11 @@ jobs:
     if: inputs.plugin-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: Themekraft/release-tooling
           ref: ${{ inputs.tooling-ref }}
@@ -79,6 +79,9 @@ jobs:
         continue-on-error: true
         with:
           build-dir: build/${{ inputs.slug }}
+          # The action comments a "Failed" summary on the PR when it has a token. Only
+          # let it do that where errors block; elsewhere the green CI would contradict it.
+          repo-token: ${{ inputs.plugin-check-blocking && github.token || '' }}
       - name: Fail on Plugin Check errors
         if: steps.plugin-check.outcome == 'failure'
         env:
