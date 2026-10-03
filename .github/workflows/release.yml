@@ -59,7 +59,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
@@ -126,7 +126,7 @@ jobs:
 
   freemius:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Stable releases wait for approval in the "production" environment when the
     # product repo configures required reviewers for it.
     environment: ${{ needs.build.outputs.prerelease == 'true' && 'beta' || 'production' }}
@@ -159,7 +159,7 @@ jobs:
   wporg:
     needs: [build, freemius]
     if: inputs.wporg && needs.build.outputs.prerelease == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -191,7 +191,7 @@ jobs:
 
   github-release:
     needs: [build, freemius]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
