@@ -100,7 +100,8 @@ jobs:
             echo "::error file=$MAIN_FILE::Version header is '$header' but the tag is '$VERSION'"
             exit 1
           fi
-          if [[ -f readme.txt && "$PRERELEASE" == false ]]; then
+          # Themes sold only through Freemius have a readme.txt without a Stable tag.
+          if [[ -f readme.txt && "$PRERELEASE" == false ]] && grep -qi '^Stable tag:' readme.txt; then
             stable=$(grep -m1 -i '^Stable tag:' readme.txt | sed -E 's/^Stable tag:[[:space:]]*//I' | tr -d '\r[:space:]')
             if [[ "$stable" != "$VERSION" ]]; then
               echo "::error file=readme.txt::Stable tag is '$stable' but the tag is '$VERSION'"
