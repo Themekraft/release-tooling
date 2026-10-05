@@ -1,0 +1,31 @@
+# Manual check that the SVN_USERNAME/SVN_PASSWORD organization secrets can
+# write to wordpress.org SVN. Run it after rotating the password. It locks and
+# unlocks one file, which needs authentication but commits nothing.
+name: svn-auth-check
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: wordpress.org plugin slug to test against.
+        required: false
+        default: buddyforms-hook-fields
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install Subversion
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq subversion > /dev/null
+      - name: Lock and unlock readme.txt
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: ${{ inputs.slug }}
+        run: |
+          url="https://plugins.svn.wordpress.org/${SLUG}/trunk/readme.txt"
+          auth=(--non-interactive --no-auth-cache --username "$SVN_USERNAME" --password "$SVN_PASSWORD")
+          svn lock "${auth[@]}" -m "Credential check from GitHub Actions" "$url"
+          svn unlock "${auth[@]}" "$url"
