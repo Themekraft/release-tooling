@@ -118,6 +118,24 @@ jobs:
             fi
           fi
 
+      - name: Check Tested up to is the current WordPress
+        if: steps.version.outputs.prerelease == 'false'
+        run: |
+          # Stable releases must declare the current WordPress major (x.y) in readme.txt.
+          [[ -f readme.txt ]] || exit 0
+          tested=$(grep -m1 -i '^Tested up to:' readme.txt | sed -E 's/^Tested up to:[[:space:]]*//I' | tr -d '\r[:space:]')
+          [[ -n "$tested" ]] || exit 0
+          latest=$(curl -fsS https://api.wordpress.org/core/version-check/1.7/ | jq -r '.offers[0].current' 2>/dev/null || true)
+          if [[ -z "$latest" || "$latest" == null ]]; then
+            echo "::warning::Could not read the current WordPress version; skipping the Tested up to check."
+            exit 0
+          fi
+          major() { echo "$1" | cut -d. -f1-2; }
+          if [[ "$(printf '%s\n%s\n' "$(major "$tested")" "$(major "$latest")" | sort -V | head -1)" != "$(major "$latest")" ]]; then
+            echo "::error file=readme.txt::Tested up to is '$tested' but the current WordPress is $latest. Test the release on it and update the header."
+            exit 1
+          fi
+
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ inputs.php-version }}

@@ -35,6 +35,8 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 2. Merge `develop` into `main` through a PR, tag the release commit on `main` with the bare version (`2.3.0` or `2.3.0-beta.1`) and push the tag.
 3. Stable releases wait in the `production` environment if it has required reviewers.
 
+A stable release fails if `readme.txt` declares a `Tested up to` older than the current WordPress major (read from the wordpress.org API at release time). Test the release on the current WordPress and update the header first; betas are not checked.
+
 If a later step fails (for example SVN), re-run the failed job: the Freemius deploy is idempotent and reuses an existing tag with the same version.
 
 Large plugins can hit `svn: E175012: Connection timed out` right after "Transmitting file data". The commit often landed anyway (BuddyForms 2.10.0 did): before re-running, check `https://plugins.svn.wordpress.org/SLUG/tags/VERSION/readme.txt` and `trunk/readme.txt`. SVN commits are atomic, so if the tag is there it is complete.
