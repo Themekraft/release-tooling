@@ -29,6 +29,16 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 5. If the plugin compiles assets (for example `@wordpress/scripts` into `build/`), set `build-command` in both `release.yml` and `ci.yml` (`pnpm install --frozen-lockfile && pnpm run build`) and declare pnpm in `package.json` (`"packageManager": "pnpm@x.y.z"`); Node and pnpm are only installed when `build-command` is set. Add `.release-build/` to the product's `.gitignore`.
 6. If errors that need real code changes remain (escaping, SQL, HTTP API, settings sanitizers), set `plugin-check-blocking: false` in the product's `ci.yml` and track them in Jira; remove the flag once they are fixed.
 
+## Release cadence
+
+Stable releases are batched. Every stable release shows an update notice on every site that runs the product and costs a full round of testing, approval and wp.org checks, so we prefer fewer releases that carry more changes.
+
+- Urgent changes go out right away as a patch release: security fixes, fatal errors or regressions introduced by the previous release, data loss, broken checkout, payments, login or registration, and breakage caused by a new WordPress, WooCommerce or BuddyPress version.
+- Everything else is merged into `develop`, added to the product's next GitHub milestone (named after the version, for example `3.6.5`) and released in the next release window.
+- Release window: once a month per product. If the milestone is empty, that product skips the month.
+- Betas are not limited: tag a beta whenever something lands in `develop` and test it on the debug site, so the stable at the end of the cycle is already tested. Freemius only offers betas to sites that opted into them.
+- Security fixes never wait for the window. Most product repos are public, so a fix merged into `develop` discloses the vulnerability to anyone who reads the diff. Either release it as a patch the same day it is merged, or prepare it in private (for example in the private fork of a GitHub security advisory) and merge it on release day.
+
 ## Releasing
 
 1. On `develop`, bump the `Version:` header (and the version constant, if the product has one) and set `Stable tag:` in `readme.txt` to the same version, betas included: Plugin Check fails with `stable_tag_mismatch` otherwise (wp.org only reads `Stable tag` from the stable release, so a beta value in `develop` never reaches it). For a stable release also add the changelog entry.
