@@ -12,9 +12,10 @@ The wordpress.org build is always the free zip downloaded back from Freemius, ne
 ## What is in here
 
 - `.github/workflows/release.yml`: reusable release workflow (`workflow_call`).
-- `.github/workflows/ci.yml`: reusable CI: `php -l` on the oldest and newest PHP, and WordPress Plugin Check on the built zip.
+- `.github/workflows/ci.yml`: reusable CI: `php -l` on the oldest and newest PHP, `check-free-js` on the built zip, and WordPress Plugin Check on the built zip.
 - `bin/build-zip`: builds `SLUG.zip` with `SLUG/` as root from a checkout, in `.release-build/` by default (so a plugin's own `build/` ships). Honors `.distignore`, runs `composer install --no-dev` in the copy (even when `.distignore` keeps `composer.json` out of the zip), never touches the source tree. Does not minify or rewrite code.
 - `bin/freemius`: small client for the Freemius developer API (`tags`, `deploy`, `set-mode`, `download`). Python 3 standard library only.
+- `bin/check-free-js`: simulates what Freemius strips from JavaScript for the free build (every `/* <fs_premium_only> */ ... /* </fs_premium_only> */` span, markers included, plus `__premium_only` files and `@fs_premium_only` header paths) and runs `node --check` on every `.js`/`.mjs`/`.cjs` file that is left (`check-free-js .release-build/SLUG`). It fails when a free version does not parse, and says whether the stripping caused it. Keep the markers around whole statements, never inside minified expressions: a minifier that joins statements (`sequences`, `join_vars`) can leave the free build with a syntax error even though the premium file parses (TKT-123).
 - `bin/gh-pc-results`: pulls the Plugin Check findings of a product's latest CI run into a JSON file (`gh-pc-results Themekraft/wc4bp ci/release-pipeline pc.json`).
 - `bin/pcp-autofix`: applies the Plugin Check fixes that cannot change behavior, from that JSON, run in the product root: ABSPATH guards, `translators:` comments (named after the sprintf arguments, inner comments moved in front of the call) and the WordPress/PHP/Tested-up-to headers. It lists every other error as manual. Review the diff, especially any translator comment that says "value".
 - `cliff.toml`: git-cliff config for the release notes.

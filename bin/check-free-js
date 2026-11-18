@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Check that every shipped JavaScript file still parses after Freemius strips
+its premium-only code for the free build.
+
+    check-free-js [DIR]
+
+DIR is the plugin directory to check (default: .). In CI it is the build
+directory from build-zip, so exactly the files that reach Freemius are checked.
+
+What Freemius removes for the free build, simulated here:
+
+- Every span from `/* <fs_premium_only> */` to the next `/* </fs_premium_only> */`,
+  markers included, nothing else (not even the surrounding whitespace). This
+  reproduces the wp.org free build of WooBuddy 3.6.4 byte for byte.
+- Files and folders with `__premium_only` in their name, and the paths listed in
+  an `@fs_premium_only` header of a root PHP file or style.css: they are not in
+  the free build, so they are skipped.
+
+Each remaining .js/.mjs/.cjs file (free version) goes through `node --check`.
+A file passes if it parses as a script or as an ES module. node_modules, .git
+and the .release-* folders are skipped; vendor/ is checked because it ships.
+
+Exit status 1 if any free version does not parse or has unbalanced markers. The
+report says whether the original file parses too, that is, whether the error
+comes from the stripping or was already there.
+
+Requires Python 3 (standard library) and Node.js on PATH.
+"""
+
+import concurrent.futures
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+STRIP = re.compile(
+    rb"/\*\s*<fs_premium_only>\s*\*/.*?/\*\s*</fs_premium_only>\s*\*/", re.S
+)
+# A marker comment left after stripping: an opening one without its closing one,
+# or a stray closing one. A plain mention of the tag in a comment is not one.
+MARKER = re.compile(rb"/\*\s*</?fs_premium_only>\s*\*/")
+HEADER = re.compile(r"@fs_premium_only\s+(.+)")
+JS_EXT = (".js", ".mjs", ".cjs")
+SKIP_DIRS = {".git", "node_modules", ".release-build", ".release-tooling"}
+ANNOTATE = os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+def premium_only_paths(root):
+    """Paths from `@fs_premium_only` headers, relative to root, without slashes."""
+    paths = set()
+    for name in sorted(os.listdir(root)):
+        if not (name.endswith(".php") or name == "style.css"):
+            continue
+        try:
+            with open(os.path.join(root, name), encoding="utf-8", errors="replace") as f:
+                head = f.read(8192)
+        except OSError:
+            continue
+        for match in HEADER.finditer(head):
+            for item in match.group(1).split(","):
+                item = item.strip().rstrip("*/").strip().strip("/")
+                if item:
+                    paths.add(item)
+    return paths
+
+
+def js_files(root):
+    excluded = premium_only_paths(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        rel_dir = "" if rel_dir == "." else rel_dir
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in SKIP_DIRS
+            and "__premium_only" not in d
+            and os.path.join(rel_dir, d) not in excluded
+        )
+        for name in sorted(filenames):
+            rel = os.path.join(rel_dir, name)
+            if (
+                name.endswith(JS_EXT)
+                and "__premium_only" not in name
+                and rel not in excluded
+            ):
+                yield rel
+
+
+def parses(path, tmp):
+    """Return None if the file parses as a script or a module, else node's error."""
+    first = node_check(path)
+    if first is None:
+        return None
+    # node --check picks the module type from the extension and the nearest
+    # package.json; try the other type explicitly before calling it an error.
+    base = os.path.join(tmp, os.path.basename(path))
+    for ext in (".cjs", ".mjs"):
+        alt = base + ext
+        shutil.copyfile(path, alt)
+        if node_check(alt) is None:
+            return None
+    return first
+
+
+def node_check(path):
+    result = subprocess.run(
+        ["node", "--check", path], capture_output=True, text=True, errors="replace"
+    )
+    if result.returncode == 0:
+        return None
+    return first_error_lines(result.stderr)
+
+
+def first_error_lines(stderr):
+    lines = [l for l in stderr.strip().splitlines() if l.strip()]
+    # node prints "file:line", the source line, a caret line, a blank, the error.
+    keep = [l for l in lines if "Error" in l][:1]
+    location = lines[:3]
+    return "\n".join(location + keep)
+
+
+def check(root, rel):
+    """Return (rel, problem, original_ok) or None when the free version parses."""
+    src = os.path.join(root, rel)
+    with open(src, "rb") as f:
+        original = f.read()
+    stripped = STRIP.sub(b"", original) if b"fs_premium_only" in original else original
+    with tempfile.TemporaryDirectory(prefix="check-free-js-") as tmp:
+        if MARKER.search(stripped):
+            return rel, "unbalanced <fs_premium_only> markers", None
+        if stripped is original:
+            error = parses(src, tmp)
+            return None if error is None else (rel, error.replace(src, rel), False)
+        free = os.path.join(tmp, "free-" + os.path.basename(rel))
+        with open(free, "wb") as f:
+            f.write(stripped)
+        error = parses(free, tmp)
+        if error is None:
+            return None
+        return rel, error.replace(free, rel + " (free)"), parses(src, tmp) is None
+
+
+def main():
+    root = sys.argv[1] if len(sys.argv) > 1 else "."
+    if not os.path.isdir(root):
+        sys.exit(f"check-free-js: {root} is not a directory")
+    if shutil.which("node") is None:
+        sys.exit("check-free-js: node is not on PATH")
+
+    files = list(js_files(root))
+    stripped = 0
+    for rel in files:
+        with open(os.path.join(root, rel), "rb") as f:
+            if STRIP.search(f.read()):
+                stripped += 1
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        results = [r for r in pool.map(lambda rel: check(root, rel), files) if r]
+
+    for rel, error, original_ok in results:
+        if original_ok is None:
+            cause = "unbalanced markers"
+        elif original_ok:
+            cause = "broken by the <fs_premium_only> stripping (the original parses)"
+        else:
+            cause = "syntax error in the file itself"
+        print(f"FAIL {rel}: {cause}\n  " + error.replace("\n", "\n  "))
+        if ANNOTATE:
+            message = f"Free build JavaScript does not parse: {cause}. " + error.splitlines()[-1]
+            line = re.match(r".*:(\d+)$", error.splitlines()[0])
+            where = f"file={rel},line={line.group(1)}" if line else f"file={rel}"
+            print(f"::error {where},title=check-free-js::{message}")
+
+    print(
+        f"check-free-js: {len(files)} JavaScript files, {stripped} with "
+        f"<fs_premium_only> blocks, {len(results)} failing."
+    )
+    sys.exit(1 if results else 0)
+
+
+if __name__ == "__main__":
+    main()
