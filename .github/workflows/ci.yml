@@ -1,5 +1,6 @@
 # Reusable CI for ThemeKraft plugins: PHP syntax on the oldest and newest
-# supported PHP, and WordPress Plugin Check on the built zip.
+# supported PHP, JavaScript syntax of the Freemius free build, and WordPress
+# Plugin Check on the built zip.
 name: ci
 
 on:
@@ -65,6 +66,43 @@ jobs:
         run: |
           find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -not -path './.tk/*' -print0 \
             | xargs -0 -n1 -P4 php -l -d display_errors=1 > /dev/null
+
+  # Freemius strips /* <fs_premium_only> */ blocks from JavaScript when it generates
+  # the free build. Check that every JavaScript file in the zip still parses after
+  # that (WooBuddy's admin.min.js did not, for 21 months: TKT-123).
+  free-js:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - uses: actions/checkout@v7
+        with:
+          repository: Themekraft/release-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .release-tooling
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer:v2
+      - uses: pnpm/action-setup@v6
+        # pnpm version comes from the product's package.json "packageManager" field.
+        if: inputs.build-command != ''
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Build assets
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+      - name: Build
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: .release-tooling/bin/build-zip "$SLUG" . .release-build
+      - name: Free build JavaScript parses
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: .release-tooling/bin/check-free-js ".release-build/$SLUG"
 
   plugin-check:
     if: inputs.plugin-check
