@@ -29,6 +29,11 @@ on:
         required: false
         type: string
         default: ""
+      plugin-check-skip-dependencies:
+        description: Comma-separated "Requires Plugins" slugs that are not on wordpress.org (for example "sfwd-lms"). Plugin Check installs every required plugin from wordpress.org and stops when one is missing, so these are removed from the header of the checked copy only; the released zip keeps them.
+        required: false
+        type: string
+        default: ""
       build-command:
         description: Command that builds the plugin's assets before packaging (for example "pnpm install --frozen-lockfile && pnpm run build"). Node and pnpm are installed only when it is set.
         required: false
@@ -133,6 +138,12 @@ jobs:
         run: ${{ inputs.build-command }}
       - name: Build
         run: .release-tooling/bin/build-zip "${{ inputs.slug }}" . .release-build
+      - name: Drop dependencies Plugin Check cannot install
+        if: inputs.plugin-check-skip-dependencies != ''
+        env:
+          SLUG: ${{ inputs.slug }}
+          SKIP: ${{ inputs.plugin-check-skip-dependencies }}
+        run: .release-tooling/bin/strip-requires-plugins ".release-build/$SLUG" "$SKIP"
       - name: Plugin Check
         id: plugin-check
         uses: wordpress/plugin-check-action@v1
