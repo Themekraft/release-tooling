@@ -1,0 +1,47 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Removes the given slugs from the "Requires Plugins" header of a built plugin,
+ * so WordPress Plugin Check (which installs every required plugin from
+ * wordpress.org) can run on products that depend on plugins sold elsewhere.
+ * Only for the copy Plugin Check runs on; never for a released zip.
+ *
+ * Usage: strip-requires-plugins <plugin-dir> <slug>[,<slug>...]
+ */
+
+if ( $argc < 3 || ! is_dir( $argv[1] ) ) {
+	fwrite( STDERR, "Usage: strip-requires-plugins <plugin-dir> <slug>[,<slug>...]\n" );
+	exit( 2 );
+}
+
+$dir  = rtrim( $argv[1], '/' );
+$skip = array_filter( array_map( 'trim', explode( ',', $argv[2] ) ) );
+$done = false;
+
+foreach ( glob( $dir . '/*.php' ) as $file ) {
+	$code = file_get_contents( $file );
+	// WordPress reads plugin headers from the first 8 KB of the file.
+	$head = substr( $code, 0, 8192 );
+	if ( ! preg_match( '/^[ \t\/*#@]*Plugin Name:/mi', $head ) ) {
+		continue;
+	}
+	if ( ! preg_match( '/^([ \t\/*#@]*Requires Plugins:[ \t]*)(.*)$/mi', $head, $m, PREG_OFFSET_CAPTURE ) ) {
+		continue;
+	}
+	$slugs = array_filter( array_map( 'trim', explode( ',', $m[2][0] ) ) );
+	$keep  = array_values( array_diff( $slugs, $skip ) );
+	$line  = $keep ? $m[1][0] . implode( ', ', $keep ) : '';
+	$start = $m[0][1];
+	$len   = strlen( $m[0][0] );
+	if ( ! $keep && "\n" === substr( $code, $start + $len, 1 ) ) {
+		$len++; // Drop the empty header line too.
+	}
+	file_put_contents( $file, substr_replace( $code, $line, $start, $len ) );
+	printf( "%s: Requires Plugins %s -> %s\n", basename( $file ), implode( ', ', $slugs ), $keep ? implode( ', ', $keep ) : '(removed)' );
+	$done = true;
+}
+
+if ( ! $done ) {
+	fwrite( STDERR, "No main plugin file with a Requires Plugins header found in $dir\n" );
+	exit( 1 );
+}
